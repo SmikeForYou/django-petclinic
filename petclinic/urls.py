@@ -18,6 +18,8 @@ urlpatterns = [
     path('visits/<int:pk>', views.VisitDetail.as_view(), name='visit-detail'),
     path('owners/<int:owner_pk>/pets', views.OwnerPetList.as_view(), name='owner-pet-list'),
     path('pets/<int:pet_pk>/visits', views.PetVisitList.as_view(), name='pet-visit-list'),
+    # Dedicated MCP event boundary for HS_MCP_MONTLY_USER_COUNT metering.
+    path('mcp/interaction/', views.MCPInteractionView.as_view(), name='mcp-interaction'),
 ]
 
 urlpatterns = format_suffix_patterns(urlpatterns)

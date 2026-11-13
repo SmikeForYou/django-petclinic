@@ -165,3 +165,25 @@ class Visit(models.Model):
             self.date_created = timezone.now()
         self.date_modified = timezone.now()
         return super(Visit, self).save(*args, **kwargs)
+
+
+# Metering: per-calendar-month distinct user deduplication store
+# -------------------------------------------------------------------
+# Durable, atomic dedup store for the HS_MCP_MONTLY_USER_COUNT metric.
+# Only a SHA-256 hash of the caller identity is persisted; no PII.
+# The row is created at most once per (year_month, identity_hash)
+# thanks to the unique constraint, which gives us atomic idempotent
+# recording even under concurrent requests (IntegrityError on race).
+class MeteringMonthlyUser(models.Model):
+    year_month = models.CharField(max_length=7)
+    identity_hash = models.CharField(max_length=64)
+    first_seen = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = (('year_month', 'identity_hash'),)
+        indexes = [
+            models.Index(fields=['year_month'], name='petclinic_m_year_mo_idx'),
+        ]
+
+    def __str__(self):
+        return '%s/%s' % (self.year_month, self.identity_hash[:8])

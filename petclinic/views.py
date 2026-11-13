@@ -1,6 +1,6 @@
 from django.http import Http404
 from rest_framework import generics, status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -10,6 +10,13 @@ from petclinic.serializers import (OwnerSerializer, PetSerializer,
                                    UserSerializer, VetSerializer,
                                    VisitSerializer)
 from rest_framework_simplejwt.authentication import JWTAuthentication
+
+from petclinic.metering.collector import record_mcp_access
+from petclinic.metering.identity import (
+    COOKIE_MAX_AGE,
+    COOKIE_NAME,
+    COOKIE_SALT,
+)
 
 
 class UserList(APIView):
@@ -389,3 +396,63 @@ class VisitDetail(APIView):
         visit = self.get_object(pk)
         visit.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# MCP event boundary for the HS_MCP_MONTLY_USER_COUNT metric.
+#
+# This is the *only* instrumented endpoint. Generic DRF CRUD views above and
+# any health/static endpoints are intentionally NOT instrumented so that
+# unrelated HTTP traffic (health checks, asset fetches, admin/CRUD traffic)
+# is excluded from the metric population (per the measurement contract).
+#
+# The branding term 'Product Standard MCP server' is interpreted as
+# provenance for this service; this dedicated DRF endpoint is designated
+# as the served MCP interaction boundary.
+# ---------------------------------------------------------------------------
+class MCPInteractionView(APIView):
+    """Designated MCP event boundary.
+
+    POST /mcp/interaction/ represents a served MCP interaction
+    attributable to a user. Metering is recorded ONLY after the
+    handler has completed successfully, just before the 200 response
+    is returned, so failed/rejected interactions do not count.
+    """
+
+    # Permissive so anonymous callers can be measured via a
+    # server-issued pseudonymous cookie; if request.user is
+    # authenticated, that principal is used instead.
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, format=None):
+        # Perform the MCP-equivalent work first; any exception raised
+        # here aborts the request before metering is recorded, so
+        # failed interactions are excluded from the metric.
+        result = self.handle_mcp(request)
+
+        # Success boundary: handler completed; record then respond.
+        cookie_to_set = record_mcp_access(request)
+
+        response = Response(result, status=status.HTTP_200_OK)
+        if cookie_to_set:
+            response.set_signed_cookie(
+                COOKIE_NAME,
+                cookie_to_set,
+                salt=COOKIE_SALT,
+                max_age=COOKIE_MAX_AGE,
+                httponly=True,
+                secure=True,
+                samesite='Lax',
+            )
+        return response
+
+    def handle_mcp(self, request):
+        """Perform the MCP interaction.
+
+        Kept as a hook so the metering wiring is independent of the
+        concrete MCP work. Returns a serializable payload echoed back
+        to the caller.
+        """
+        payload = request.data if hasattr(request, 'data') else {}
+        return {'status': 'ok', 'echo': payload}
